@@ -9,6 +9,7 @@ Excel批量加密解密工具
 import sys
 import os
 import csv
+import json
 import traceback
 from datetime import datetime
 import pythoncom
@@ -16,6 +17,16 @@ import win32com.client
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
+
+
+CONFIG_FILE = "tool_config.json"
+
+
+def get_resource_path(relative_path):
+    """获取资源文件的绝对路径，支持PyInstaller打包"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 
 class ProcessingThread(QThread):
@@ -132,6 +143,8 @@ class ProcessingThread(QThread):
     
     def clean_temp_files(self):
         """清理临时文件"""
+        if not os.path.exists(self.input_path):
+            return
         for f in os.listdir(self.input_path):
             if f.startswith('~$'):
                 try:
@@ -155,28 +168,48 @@ class ProcessingThread(QThread):
             
             wb = None
             try:
-                # 打开原始工作簿
-                wb = excel.Workbooks.Open(input_filepath)
+                # 打开原始工作簿 - 细粒度异常处理
+                try:
+                    wb = excel.Workbooks.Open(input_filepath)
+                except Exception as open_error:
+                    error_msg = str(open_error)
+                    if "password" in error_msg.lower() or "密码" in error_msg:
+                        return (False, "文件已加密或需要密码才能打开", "文件已加密")
+                    elif "损坏" in error_msg or "corrupt" in error_msg.lower():
+                        return (False, f"文件损坏无法打开: {error_msg[:30]}", "文件损坏")
+                    elif "权限" in error_msg or "permission" in error_msg.lower():
+                        return (False, "没有权限访问文件", "权限不足")
+                    else:
+                        return (False, f"无法打开文件: {error_msg[:50]}", "打开失败")
                 
                 # 设置密码
-                wb.Password = password
-                wb.WritePassword = password
+                try:
+                    wb.Password = password
+                    wb.WritePassword = password
+                except Exception as password_error:
+                    error_msg = str(password_error)
+                    return (False, f"密码设置错误: {error_msg[:30]}", "密码错误")
                 
                 # 另存为新文件
-                wb.SaveAs(output_filepath)
-                
-                # 验证保存成功
-                if os.path.exists(output_filepath):
-                    return (True, "加密成功", notes)
-                else:
-                    return (False, "保存失败", "文件未创建")
+                try:
+                    # 如果输出文件已存在，先删除
+                    if os.path.exists(output_filepath):
+                        try:
+                            os.remove(output_filepath)
+                        except:
+                            pass
                     
-            except Exception as e:
-                error_msg = str(e)
-                if "password" in error_msg.lower() or "密码" in error_msg:
-                    return (False, "密码设置错误", "密码设置失败")
-                else:
-                    return (False, f"加密失败: {error_msg[:50]}", "加密异常")
+                    wb.SaveAs(output_filepath)
+                    
+                    # 验证保存成功
+                    if os.path.exists(output_filepath):
+                        return (True, "加密成功", notes)
+                    else:
+                        return (False, "保存失败", "文件未创建")
+                        
+                except Exception as save_error:
+                    error_msg = str(save_error)
+                    return (False, f"保存失败: {error_msg[:50]}", "保存错误")
                     
             finally:
                 if wb:
@@ -275,125 +308,211 @@ class ExcelProtectorGUI(QMainWindow):
         self.is_cancelled = False
         self.is_processing = False
         self.password_dict = {}
+        self.config = self.load_config()
         self.init_ui()
+        self.apply_styles()
     
     def init_ui(self):
         """初始化界面"""
         self.setWindowTitle("Excel批量加密解密工具 v3.0")
-        self.setGeometry(100, 100, 1000, 800)
+        self.setGeometry(100, 100, 1200, 850)
         
         try:
             self.setWindowIcon(QIcon.fromTheme("document-encrypt"))
         except:
             pass
         
-        # 创建中心部件
+        self.create_menu_bar()
+        
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(15, 15, 15, 15)
         
-        # 1. 文件夹设置区域
-        folder_group = QGroupBox("文件夹设置")
+        self.create_folder_section(main_layout)
+        self.create_function_section(main_layout)
+        self.create_password_section(main_layout)
+        self.create_files_section(main_layout)
+        self.create_progress_section(main_layout)
+        self.create_button_section(main_layout)
+        
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("就绪")
+        
+        self.on_function_changed()
+        
+        QTimer.singleShot(100, self.scan_files)
+    
+    def create_menu_bar(self):
+        """创建菜单栏"""
+        menubar = self.menuBar()
+        
+        file_menu = menubar.addMenu("文件(&F)")
+        
+        open_input_action = QAction("打开输入文件夹(&I)", self)
+        open_input_action.setShortcut("Ctrl+I")
+        open_input_action.triggered.connect(lambda: self.browse_folder(self.input_folder_edit))
+        file_menu.addAction(open_input_action)
+        
+        open_output_action = QAction("打开输出文件夹(&O)", self)
+        open_output_action.setShortcut("Ctrl+O")
+        open_output_action.triggered.connect(lambda: self.browse_folder(self.output_folder_edit))
+        file_menu.addAction(open_output_action)
+        
+        file_menu.addSeparator()
+        
+        export_config_action = QAction("导出配置(&E)", self)
+        export_config_action.setShortcut("Ctrl+E")
+        export_config_action.triggered.connect(self.save_config)
+        file_menu.addAction(export_config_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("退出(&X)", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        edit_menu = menubar.addMenu("编辑(&E)")
+        
+        select_all_action = QAction("全选文件(&A)", self)
+        select_all_action.setShortcut("Ctrl+A")
+        select_all_action.triggered.connect(lambda: self.select_all_check.setChecked(True))
+        edit_menu.addAction(select_all_action)
+        
+        deselect_all_action = QAction("取消全选(&D)", self)
+        deselect_all_action.setShortcut("Ctrl+D")
+        deselect_all_action.triggered.connect(lambda: self.select_all_check.setChecked(False))
+        edit_menu.addAction(deselect_all_action)
+        
+        edit_menu.addSeparator()
+        
+        clear_log_action = QAction("清空日志(&C)", self)
+        clear_log_action.setShortcut("Ctrl+L")
+        clear_log_action.triggered.connect(self.clear_log)
+        edit_menu.addAction(clear_log_action)
+        
+        help_menu = menubar.addMenu("帮助(&H)")
+        
+        about_action = QAction("关于(&A)", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+        
+        usage_action = QAction("使用说明(&U)", self)
+        usage_action.setShortcut("F1")
+        usage_action.triggered.connect(self.show_usage)
+        help_menu.addAction(usage_action)
+    
+    def create_folder_section(self, parent_layout):
+        """创建文件夹设置区域"""
+        folder_group = QGroupBox("📁 文件夹设置")
         folder_layout = QVBoxLayout()
+        folder_layout.setSpacing(10)
         
-        # 输入文件夹
         input_folder_layout = QHBoxLayout()
-        input_folder_layout.addWidget(QLabel("输入文件夹:"))
-        self.input_folder_edit = QLineEdit(os.getcwd())
+        input_folder_layout.addWidget(QLabel("输入文件夹:"), 0, Qt.AlignRight)
+        self.input_folder_edit = QLineEdit(self.config.get("input_folder", os.getcwd()))
         self.input_folder_edit.setPlaceholderText("选择要处理的Excel文件所在文件夹...")
-        input_folder_layout.addWidget(self.input_folder_edit)
+        input_folder_layout.addWidget(self.input_folder_edit, 1)
         
-        self.input_browse_button = QPushButton("浏览...")
+        self.input_browse_button = QPushButton("📂 浏览...")
         self.input_browse_button.clicked.connect(lambda: self.browse_folder(self.input_folder_edit))
         input_folder_layout.addWidget(self.input_browse_button)
         
         folder_layout.addLayout(input_folder_layout)
         
-        # 输出文件夹
         output_folder_layout = QHBoxLayout()
-        output_folder_layout.addWidget(QLabel("输出文件夹:"))
-        self.output_folder_edit = QLineEdit(os.path.join(os.getcwd(), "output"))
+        output_folder_layout.addWidget(QLabel("输出文件夹:"), 0, Qt.AlignRight)
+        self.output_folder_edit = QLineEdit(self.config.get("output_folder", os.path.join(os.getcwd(), "output")))
         self.output_folder_edit.setPlaceholderText("处理后的文件保存位置...")
-        output_folder_layout.addWidget(self.output_folder_edit)
+        output_folder_layout.addWidget(self.output_folder_edit, 1)
         
-        self.output_browse_button = QPushButton("浏览...")
+        self.output_browse_button = QPushButton("📂 浏览...")
         self.output_browse_button.clicked.connect(lambda: self.browse_folder(self.output_folder_edit))
         output_folder_layout.addWidget(self.output_browse_button)
         
         self.same_folder_check = QCheckBox("使用相同文件夹")
-        self.same_folder_check.setChecked(False)
+        self.same_folder_check.setChecked(self.config.get("same_folder", False))
         self.same_folder_check.stateChanged.connect(self.on_same_folder_changed)
         output_folder_layout.addWidget(self.same_folder_check)
         
         folder_layout.addLayout(output_folder_layout)
         folder_group.setLayout(folder_layout)
-        main_layout.addWidget(folder_group)
-        
-        # 2. 功能设置区域
-        function_group = QGroupBox("功能设置")
+        parent_layout.addWidget(folder_group)
+    
+    def create_function_section(self, parent_layout):
+        """创建功能设置区域"""
+        function_group = QGroupBox("⚙️ 功能设置")
         function_layout = QVBoxLayout()
+        function_layout.setSpacing(10)
         
-        # 功能选择
         radio_layout = QHBoxLayout()
-        self.encrypt_radio = QRadioButton("批量加密")
-        self.decrypt_radio = QRadioButton("批量解密")
-        self.encrypt_radio.setChecked(True)
+        self.encrypt_radio = QRadioButton("🔒 批量加密")
+        self.decrypt_radio = QRadioButton("🔓 批量解密")
+        
+        saved_mode = self.config.get("mode", "encrypt")
+        if saved_mode == "decrypt":
+            self.decrypt_radio.setChecked(True)
+        else:
+            self.encrypt_radio.setChecked(True)
+            
         self.encrypt_radio.toggled.connect(self.on_function_changed)
         radio_layout.addWidget(self.encrypt_radio)
         radio_layout.addWidget(self.decrypt_radio)
+        radio_layout.addStretch()
         function_layout.addLayout(radio_layout)
         
-        # 文件名后缀设置
         suffix_layout = QHBoxLayout()
-        suffix_layout.addWidget(QLabel("文件名后缀:"))
-        self.suffix_edit = QLineEdit()
+        suffix_layout.addWidget(QLabel("文件名后缀:"), 0, Qt.AlignRight)
+        self.suffix_edit = QLineEdit(self.config.get("suffix", ""))
         self.suffix_edit.setPlaceholderText("为空则不添加后缀")
         suffix_layout.addWidget(self.suffix_edit)
         
-        suffix_layout.addWidget(QLabel("示例:"))
+        suffix_layout.addWidget(QLabel("示例:"), 0, Qt.AlignRight)
         self.suffix_example = QLabel("原文件.xlsx → 原文件_加密.xlsx")
         self.suffix_example.setStyleSheet("color: #666; font-style: italic;")
         suffix_layout.addWidget(self.suffix_example)
         
         function_layout.addLayout(suffix_layout)
         
-        # 自动匹配密码本复选框
         self.auto_match_check = QCheckBox("自动从密码本匹配密码")
+        self.auto_match_check.setChecked(self.config.get("auto_match", False))
         self.auto_match_check.stateChanged.connect(self.on_auto_match_changed)
         function_layout.addWidget(self.auto_match_check)
         
         function_group.setLayout(function_layout)
-        main_layout.addWidget(function_group)
-        
-        # 3. 密码设置区域
-        password_group = QGroupBox("密码设置")
+        parent_layout.addWidget(function_group)
+    
+    def create_password_section(self, parent_layout):
+        """创建密码设置区域"""
+        password_group = QGroupBox("🔑 密码设置")
         password_layout = QVBoxLayout()
+        password_layout.setSpacing(10)
         
-        # 密码本选择
         password_book_layout = QHBoxLayout()
-        password_book_layout.addWidget(QLabel("密码本文件:"))
-        self.password_book_edit = QLineEdit()
+        password_book_layout.addWidget(QLabel("密码本文件:"), 0, Qt.AlignRight)
+        self.password_book_edit = QLineEdit(self.config.get("password_book", ""))
         self.password_book_edit.setPlaceholderText("选择包含文件-密码对应的CSV文件")
-        password_book_layout.addWidget(self.password_book_edit)
+        password_book_layout.addWidget(self.password_book_edit, 1)
         
-        self.browse_password_button = QPushButton("浏览...")
+        self.browse_password_button = QPushButton("📄 浏览...")
         self.browse_password_button.clicked.connect(self.browse_password_book)
         password_book_layout.addWidget(self.browse_password_button)
         
-        self.load_password_button = QPushButton("加载密码本")
+        self.load_password_button = QPushButton("📥 加载密码本")
         self.load_password_button.clicked.connect(self.load_password_book)
         password_book_layout.addWidget(self.load_password_button)
         
-        # 导出模板按钮
-        self.export_template_button = QPushButton("导出模板")
+        self.export_template_button = QPushButton("📋 导出模板")
         self.export_template_button.clicked.connect(self.export_password_template)
         password_book_layout.addWidget(self.export_template_button)
         
         password_layout.addLayout(password_book_layout)
         
-        # 单密码输入（用于加密）
         single_password_layout = QHBoxLayout()
-        single_password_layout.addWidget(QLabel("统一密码:"))
+        single_password_layout.addWidget(QLabel("统一密码:"), 0, Qt.AlignRight)
         self.single_password_edit = QLineEdit()
         self.single_password_edit.setPlaceholderText("为所有文件设置相同的密码")
         self.single_password_edit.setEchoMode(QLineEdit.Password)
@@ -406,36 +525,42 @@ class ExcelProtectorGUI(QMainWindow):
         
         password_layout.addLayout(single_password_layout)
         
-        # CSV格式说明
-        csv_info = QLabel("CSV格式要求: 第一列为文件名, 第二列为密码")
+        csv_info = QLabel("💡 CSV格式要求: 第一列为文件名, 第二列为密码")
         csv_info.setStyleSheet("color: #666; font-style: italic;")
         password_layout.addWidget(csv_info)
         
         password_group.setLayout(password_layout)
-        main_layout.addWidget(password_group)
-        
-        # 4. 文件列表区域
-        files_group = QGroupBox("文件列表")
+        parent_layout.addWidget(password_group)
+    
+    def create_files_section(self, parent_layout):
+        """创建文件列表区域"""
+        files_group = QGroupBox("📋 文件列表")
         files_layout = QVBoxLayout()
+        files_layout.setSpacing(10)
         
         self.files_table = QTableWidget()
         self.files_table.setColumnCount(6)
         self.files_table.setHorizontalHeaderLabels(["选择", "文件名", "状态", "密码", "备注", "新文件名"])
         self.files_table.horizontalHeader().setStretchLastSection(True)
+        self.files_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.files_table.setAlternatingRowColors(True)
         
-        # 设置列宽
-        self.files_table.setColumnWidth(0, 50)    # 选择
-        self.files_table.setColumnWidth(1, 200)   # 文件名
-        self.files_table.setColumnWidth(2, 100)   # 状态
-        self.files_table.setColumnWidth(3, 120)   # 密码
-        self.files_table.setColumnWidth(4, 100)   # 备注
-        self.files_table.setColumnWidth(5, 200)   # 新文件名
+        header = self.files_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        
+        self.files_table.setColumnWidth(0, 60)
+        self.files_table.setColumnWidth(2, 100)
+        self.files_table.setColumnWidth(4, 100)
         
         files_layout.addWidget(self.files_table)
         
-        # 按钮区域
         table_buttons_layout = QHBoxLayout()
-        self.refresh_button = QPushButton("刷新文件列表")
+        self.refresh_button = QPushButton("🔄 刷新文件列表")
         self.refresh_button.clicked.connect(self.scan_files)
         table_buttons_layout.addWidget(self.refresh_button)
         
@@ -443,11 +568,11 @@ class ExcelProtectorGUI(QMainWindow):
         self.select_all_check.stateChanged.connect(self.select_all_files)
         table_buttons_layout.addWidget(self.select_all_check)
         
-        self.update_passwords_button = QPushButton("更新选中文件的密码")
+        self.update_passwords_button = QPushButton("🔑 更新选中文件的密码")
         self.update_passwords_button.clicked.connect(self.update_selected_passwords)
         table_buttons_layout.addWidget(self.update_passwords_button)
         
-        self.preview_button = QPushButton("预览新文件名")
+        self.preview_button = QPushButton("👁️ 预览新文件名")
         self.preview_button.clicked.connect(self.preview_new_filenames)
         table_buttons_layout.addWidget(self.preview_button)
         
@@ -455,39 +580,47 @@ class ExcelProtectorGUI(QMainWindow):
         files_layout.addLayout(table_buttons_layout)
         
         files_group.setLayout(files_layout)
-        main_layout.addWidget(files_group)
-        
-        # 5. 进度和日志区域
-        progress_group = QGroupBox("进度和日志")
+        parent_layout.addWidget(files_group)
+    
+    def create_progress_section(self, parent_layout):
+        """创建进度和日志区域"""
+        progress_group = QGroupBox("📊 进度和日志")
         progress_layout = QVBoxLayout()
+        progress_layout.setSpacing(10)
         
         self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
         progress_layout.addWidget(self.progress_bar)
         
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
+        self.log_text.setMaximumHeight(180)
         progress_layout.addWidget(self.log_text)
         
         progress_group.setLayout(progress_layout)
-        main_layout.addWidget(progress_group)
-        
-        # 6. 按钮区域
+        parent_layout.addWidget(progress_group)
+    
+    def create_button_section(self, parent_layout):
+        """创建按钮区域"""
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         
-        self.start_button = QPushButton("开始执行")
+        self.start_button = QPushButton("▶️ 开始执行")
         self.start_button.clicked.connect(self.start_processing)
-        self.start_button.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px;")
+        self.start_button.setMinimumHeight(40)
         
-        self.cancel_button = QPushButton("取消")
+        self.cancel_button = QPushButton("⏹️ 取消")
         self.cancel_button.clicked.connect(self.cancel_processing)
         self.cancel_button.setEnabled(False)
+        self.cancel_button.setMinimumHeight(40)
         
-        self.clear_log_button = QPushButton("清空日志")
+        self.clear_log_button = QPushButton("🗑️ 清空日志")
         self.clear_log_button.clicked.connect(self.clear_log)
+        self.clear_log_button.setMinimumHeight(40)
         
-        self.export_log_button = QPushButton("导出日志")
+        self.export_log_button = QPushButton("💾 导出日志")
         self.export_log_button.clicked.connect(self.export_log)
+        self.export_log_button.setMinimumHeight(40)
         
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.cancel_button)
@@ -495,23 +628,218 @@ class ExcelProtectorGUI(QMainWindow):
         button_layout.addWidget(self.export_log_button)
         button_layout.addStretch()
         
-        main_layout.addLayout(button_layout)
+        parent_layout.addLayout(button_layout)
+    
+    def show_about(self):
+        """显示关于对话框"""
+        QMessageBox.information(
+            self,
+            "关于",
+            "Excel批量加密解密工具 v3.0\n\n"
+            "功能：批量加密/解密Excel文件，支持密码本管理\n"
+            "技术：PyQt5 + win32com\n\n"
+            "© 2024 AI Assistant"
+        )
+    
+    def show_usage(self):
+        """显示使用说明"""
+        help_text = """
+<h3>使用说明</h3>
+
+<b>1. 基本流程</b>
+<ul>
+    <li>选择输入文件夹（包含要处理的Excel文件）</li>
+    <li>选择输出文件夹（处理后的文件保存位置）</li>
+    <li>选择加密或解密模式</li>
+    <li>设置密码（统一密码或从密码本加载）</li>
+    <li>点击"开始执行"</li>
+</ul>
+
+<b>2. 密码本格式</b>
+<ul>
+    <li>CSV文件，第一列文件名，第二列密码</li>
+    <li>支持UTF-8、GBK编码</li>
+    <li>支持#开头的注释行</li>
+</ul>
+
+<b>3. 快捷键</b>
+<ul>
+    <li>Ctrl+I：打开输入文件夹</li>
+    <li>Ctrl+O：打开输出文件夹</li>
+    <li>Ctrl+A：全选文件</li>
+    <li>Ctrl+L：清空日志</li>
+    <li>F1：查看使用说明</li>
+</ul>
+
+<b>4. 注意事项</b>
+<ul>
+    <li>原文件不会被修改</li>
+    <li>加密时必须设置密码</li>
+    <li>解密时密码本可以自动匹配</li>
+</ul>
+        """
         
-        # 状态栏
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("就绪")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("使用说明")
+        dialog.resize(600, 500)
         
-        # 初始化示例后缀
-        self.on_function_changed()
+        layout = QVBoxLayout()
+        label = QLabel(help_text)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.RichText)
+        layout.addWidget(label)
         
-        # 初始化文件列表
-        QTimer.singleShot(100, self.scan_files)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
     
     # ==================== 界面操作方法 ====================
     
+    def apply_styles(self):
+        """应用全局样式"""
+        style = """
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+            QGroupBox {
+                font-weight: bold;
+                font-size: 12px;
+                border: 2px solid #cccccc;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background-color: white;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:pressed {
+                background-color: #0D47A1;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+                color: #757575;
+            }
+            QPushButton#start_button {
+                background-color: #4CAF50;
+                font-weight: bold;
+            }
+            QPushButton#start_button:hover {
+                background-color: #45a049;
+            }
+            QPushButton#cancel_button {
+                background-color: #f44336;
+            }
+            QPushButton#cancel_button:hover {
+                background-color: #d32f2f;
+            }
+            QLineEdit {
+                padding: 5px;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border: 2px solid #2196F3;
+            }
+            QTableWidget {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background-color: white;
+                gridline-color: #e0e0e0;
+            }
+            QTableWidget::item:selected {
+                background-color: #e3f2fd;
+                color: black;
+            }
+            QHeaderView::section {
+                background-color: #f5f5f5;
+                padding: 5px;
+                border: 1px solid #cccccc;
+                font-weight: bold;
+            }
+            QProgressBar {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                text-align: center;
+                background-color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 3px;
+            }
+            QTextEdit {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background-color: #fafafa;
+                font-family: Consolas, monospace;
+                font-size: 11px;
+            }
+            QRadioButton {
+                spacing: 5px;
+            }
+            QCheckBox {
+                spacing: 5px;
+            }
+            QStatusBar {
+                background-color: #f5f5f5;
+                border-top: 1px solid #cccccc;
+            }
+        """
+        self.setStyleSheet(style)
+        
+        self.start_button.setObjectName("start_button")
+        self.cancel_button.setObjectName("cancel_button")
+    
+    def load_config(self):
+        """加载配置"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except:
+            pass
+        return {}
+    
+    def save_config(self):
+        """保存配置"""
+        try:
+            config = {
+                "input_folder": self.input_folder_edit.text(),
+                "output_folder": self.output_folder_edit.text(),
+                "same_folder": self.same_folder_check.isChecked(),
+                "mode": "encrypt" if self.encrypt_radio.isChecked() else "decrypt",
+                "suffix": self.suffix_edit.text(),
+                "auto_match": self.auto_match_check.isChecked(),
+                "password_book": self.password_book_edit.text()
+            }
+            
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                
+            self.log_message("配置已保存", "success")
+        except Exception as e:
+            self.log_message(f"保存配置失败: {str(e)}", "error")
+    
     def browse_folder(self, line_edit):
         """浏览文件夹"""
+        self.status_bar.showMessage("正在选择文件夹...", 2000)
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹", line_edit.text())
         if folder:
             line_edit.setText(folder)
@@ -848,11 +1176,15 @@ class ExcelProtectorGUI(QMainWindow):
             if widget:
                 checkbox = widget.layout().itemAt(0).widget()
                 if checkbox.isChecked():
-                    filename = self.files_table.item(row, 1).text()
+                    filename_item = self.files_table.item(row, 1)
+                    filename = filename_item.text() if filename_item else ""
+                    
                     password_item = self.files_table.item(row, 3)
                     password = password_item.text() if password_item else ""
+                    
                     notes_item = self.files_table.item(row, 4)
                     notes = notes_item.text() if notes_item else ""
+                    
                     new_filename_item = self.files_table.item(row, 5)
                     new_filename = new_filename_item.text() if new_filename_item else filename
                     
@@ -901,9 +1233,7 @@ class ExcelProtectorGUI(QMainWindow):
             QMessageBox.warning(self, "警告", "处理正在进行中，请等待完成或取消！")
             return
         
-        # 验证输入
         input_path = self.input_folder_edit.text()
-        print(input_path)
         if not os.path.exists(input_path):
             QMessageBox.warning(self, "警告", "请选择有效的输入文件夹！")
             return
@@ -1125,10 +1455,12 @@ class ExcelProtectorGUI(QMainWindow):
             )
             if reply == QMessageBox.Yes:
                 self.cancel_processing()
+                self.save_config()
                 event.accept()
             else:
                 event.ignore()
         else:
+            self.save_config()
             event.accept()
 
 
@@ -1138,7 +1470,11 @@ def main():
     app.setStyle('Fusion')
     
     try:
-        app.setWindowIcon(QIcon.fromTheme("applications-office"))
+        icon_path = get_resource_path('图标.ico')
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+        else:
+            app.setWindowIcon(QIcon.fromTheme("applications-office"))
     except:
         pass
     
