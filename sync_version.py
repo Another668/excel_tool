@@ -21,17 +21,17 @@ def read_version_from_readme(readme_path):
         with open(readme_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 匹配版本号模式：### [v3.3] - 2026-05-15
-        version_pattern = r'### \[v(\d+\.\d+)\]'
+        # 匹配版本号模式：### [v3.6.0] - 2026-05-15 或 ### [v3.6] - 2026-05-15
+        version_pattern = r'### \[v(\d+\.\d+(\.\d+)?)\]'
         matches = re.findall(version_pattern, content)
         
         if matches:
-            latest_version = matches[0]  # 第一个匹配项是最新版本
+            latest_version = matches[0][0]  # 第一个匹配项是最新版本
             print(f"[信息] 从README.md读取到版本号: {latest_version}")
             return latest_version
         
         # 备用方案：检查徽章
-        badge_pattern = r'badge/version-(\d+\.\d+)-blue'
+        badge_pattern = r'badge/version-(\d+\.\d+(\.\d+)?)-blue'
         badge_match = re.search(badge_pattern, content)
         if badge_match:
             latest_version = badge_match.group(1)

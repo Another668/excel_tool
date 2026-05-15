@@ -11,7 +11,7 @@ cd /d "%SCRIPT_DIR%"
 
 echo ==========================================
 echo   Excel批量加密解密工具 - 打包脚本
-echo   版本: v3.4
+echo   版本: v3.5
 echo   日期: 2026-05-15
 echo   工作目录: %SCRIPT_DIR%
 echo ==========================================
@@ -93,7 +93,7 @@ echo [3/9] 检查运行环境...
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到Python！请先安装Python 3.6+！
+    echo [错误] 未找到Python！请先安装Python 3.6+。
     echo 下载地址: https://www.python.org/downloads/
     pause
     exit /b 1
