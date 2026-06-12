@@ -4,7 +4,7 @@
 
 **一个高效的Windows桌面应用，用于批量加密和解密Excel文件**
 
-[![Version](https://img.shields.io/badge/version-3.6.0-blue.svg)](https://github.com/excel-protector/releases)
+[![Version](https://img.shields.io/badge/version-3.6.6-blue.svg)](https://github.com/excel-protector/releases)
 [![Python](https://img.shields.io/badge/python-3.6+-green.svg)](https://www.python.org/)
 [![PyQt5](https://img.shields.io/badge/PyQt5-5.15+-orange.svg)](https://www.riverbankcomputing.com/software/pyqt/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
@@ -58,6 +58,186 @@
 ---
 
 ## 📝 更新日志
+
+### [v3.6.6] - 2026-06-12
+
+#### 🐛 根本性修复：按钮与文件列表行视觉重叠
+- **问题根因**
+  - 文件组 `MinimumHeight(280)` + 表格 `MinimumHeight(360)` + 其他固定区域 > 小窗口可用高度
+  - 表格 31 行时 `sizeHint ≈ 1024px`，远超文件组容量
+  - 表格行被画到按钮行上方，造成视觉重叠
+- **根本方案：QScrollArea 接管主内容**
+  - 用 `QScrollArea` 包裹整个主布局（`init_ui`）
+  - 内部 widget 始终获得自然高度，不再被窗口挤压
+  - 窗口高度不足时自动出现垂直滚动条
+  - 表格与按钮的相对位置永远正确（按钮在表格下方）
+  - 彻底解决布局溢出问题
+- **配套优化**
+  - 表格 sizePolicy: `Expanding, Preferred`（不强行撑大）
+  - 表格 maxHeight 限制放宽到 800px，minHeight 收紧到 150px
+  - 文件组 minHeight 收紧到 200px
+  - `_on_window_resize` 简化为只设上限
+  - 滚动条美化：10px 窄条、圆角 handle、hover 高亮
+
+#### ✅ 多分辨率验证
+- 1024×680: 内部 widget 934px，滚动条出现，按钮在表格下方 ✓
+- 1280×800: 内部 widget 934px，滚动条出现，按钮在表格下方 ✓
+- 1440×900: 内部 widget 934px，滚动条出现，按钮在表格下方 ✓
+- 1920×1080: 内部 widget 934px，滚动条消失，全内容可见 ✓
+
+#### 📦 影响范围
+- 文件清单：Excel批量解密工具与密码管理.py、README.md
+- 不影响打包脚本（build.bat 自动读取新 __version__ 生成 v3.6.6.exe）
+
+### [v3.6.5] - 2026-06-12
+
+#### 🐛 按钮重叠修复
+- **文件列表区底部按钮与表格重叠问题**
+  - 原因：`QTableWidget` 设置 `sizePolicy(Expanding, Expanding)` 且 `MinimumHeight=380`，当文件数>25 时表格撑出 `QGroupBox` 边界
+  - 修复：内部 `QVBoxLayout` 使用 `stretch(表格=1, 按钮=0)`，表格吸收多余空间、按钮保持固定高度
+  - 表格按钮 `setFixedHeight(34)` + 最小宽度，按钮行永远可见不再重叠
+  - 日志框从 `MaximumHeight=180` 改为 `MinimumHeight=100` + Preferred，按需伸缩
+  - 文件组 `MinimumHeight` 从 420 降为 280，由内部 stretch 自然填充
+
+#### 📐 响应式布局系统
+- **屏幕档位识别**
+  - tiny (<1366宽) / small (1366-1680) / medium (1680-1920) / large (≥1920)
+  - 基于 `QScreen.availableGeometry()` + `devicePixelRatio()` 检测
+  - 紧凑屏用更小间距(8px) 与边距(10px)，平衡屏用标准间距(12px)
+- **智能窗口尺寸**
+  - 默认窗口：`min(屏幕宽×0.85, 1400)` × `min(屏幕高×0.88, 1000)`
+  - 最小窗口：1024×680，避免小屏内容溢出
+  - 窗口居中显示
+  - `setMinimumSize()` 防止用户拖到过小
+- **动态控件尺寸**
+  - 表格行高：tiny=26 / small=28 / medium=32 / large=32 px
+  - 按钮高度：tiny=30 / small=32 / medium=34 / large=36 px
+  - 字号：tiny/small=12pt，medium/large=13pt
+  - `_apply_responsive_styles()` 在 `apply_styles()` 末尾自动调用
+- **窗口大小变化自适应**
+  - 覆写 `resizeEvent` → `_on_window_resize()`
+  - 窗口拉大时文件表格高度按 `win_h // 2` 自动扩展
+  - 多文件时滚动条接管，按钮行始终在表格正下方
+  - 不会因内容增多导致按钮被遮挡
+
+#### 📦 影响范围
+- 文件清单：Excel批量解密工具与密码管理.py、README.md
+- 不影响打包脚本（build.bat 自动读取新 __version__ 生成 v3.6.5.exe）
+
+### [v3.6.4] - 2026-06-12
+
+#### 🎨 主界面布局重构
+- **功能设置 + 密码设置并排布局**
+  - 两个模块由"上下堆叠"改为"左右并排"，处于同一水平行
+  - 左侧"功能设置"压缩宽度（最大 420px），保持紧凑
+  - 右侧"密码设置"占主要宽度（最小 500px，stretch=1 自动扩展）
+  - 两模块在视觉上平级、风格统一，QGroupBox 边框/标题样式一致
+- **"统一密码"标签加粗**
+  - 字号加大到 14px，font-weight: bold
+  - 颜色 #1976D2（主蓝），与按钮色调呼应
+  - 强化视觉强调，便于用户快速定位核心操作
+- **文件列表区域扩展**
+  - 占据原密码设置模块的垂直空间（absorb 高度约 420px）
+  - 默认即可看到 10-12 行文件，文件夹扫描结果一目了然
+  - 表格 sizePolicy.Expanding + 主布局 stretch=3，窗口拉大时优先扩展文件列表
+- **滚动性能优化**
+  - QTableWidget 滚动模式改为 ScrollPerPixel，平滑且开销低
+  - setWordWrap(False) 减少逐行重绘
+  - 主布局 spacing 从 15px 收紧到 12px，节省空间
+- **窗口高度自适应**
+  - 初始窗口高度 850 → 900px，容纳更长的文件列表
+  - 文件列表区最小高度 420px、表格最小高度 380px
+
+#### 📦 影响范围
+- 文件清单：Excel批量解密工具与密码管理.py、README.md
+- 不影响打包脚本（build.bat 自动读取新 __version__ 生成 v3.6.4.exe）
+
+### [v3.6.3] - 2026-06-12
+
+#### ✨ 打包脚本优化
+- **EXE 文件名自动附带版本号**
+  - 每次打包自动从 `__version__` 提取版本号，构造 `Excel批量加密解密工具_v3.6.3.exe` 命名
+  - 解决多版本并存时文件名冲突、混淆等问题
+  - 验证/UPX 步骤同步使用带版本号的文件名
+  - build.bat 中通过 `for /f` 解析 Python 源文件的 `__version__`，无需外部参数
+- **构建流程稳健性**
+  - 若版本号解析失败自动 fallback 为 `unknown`，不会中断打包
+
+#### 🎨 GUI 全面优化
+- **高 DPI 适配**
+  - 启动前启用 `Qt.AA_EnableHighDpiScaling` 与 `AA_UseHighDpiPixmaps`
+  - 设置 `HighDpiScaleFactorRoundingPolicy.PassThrough` 减少缩放模糊
+  - 解决高分辨率屏下字体过小、控件错位问题
+- **字体后备链**
+  - 应用全局默认字体设为 `Microsoft YaHei UI` (9pt)
+  - 通过 `QFont.setFamilies` 设置后备链：Microsoft YaHei UI → Microsoft YaHei → Segoe UI
+  - 样式表同步加 `font-family` 链，含 `微软雅黑` 兜底
+  - 解决部分中文字符显示为方框、字形不完整问题
+- **控件尺寸自适应**
+  - 全局 `font-size: 13px`（原 12px），中英文混排更清晰
+  - QLabel `min-height: 20px`，给中文字符留足垂直空间
+  - 表格数据行高 32px、表头行高 32px（防中文截断）
+  - QPushButton/QLineEdit/QRadioButton 等均设 `min-height`，避免压缩
+- **菜单/状态栏同步加字号**
+  - QMenuBar、QMenu 字号 13px，菜单层级与正文一致
+
+#### 🖼️ 图标显示修复
+- **任务栏图标修复**
+  - `SetCurrentProcessExplicitAppUserModelID` 从 `_load_and_set_icon`（窗口创建后）前移到 `main()`（窗口创建前）
+  - 解决 Windows 7+ 任务栏把 EXE 归为"通用"图标的问题
+  - AppUserModelID 包含版本号（`com.excelprotector.exceltool.3.6.3`），多版本并存也能正确分组
+- **窗口/应用图标双绑**
+  - QApplication 与 QMainWindow 各自调用 `setWindowIcon`
+  - 所有 QDialog（关于/使用说明/完成提示等）继承应用图标
+- **图标资源规范化**
+  - 图标.ico 已含 16/32/48/64/128/256 六种尺寸，跨场景显示清晰
+  - PyInstaller 通过 `--icon=图标.ico` 嵌入 EXE 资源，文件系统图标正常显示
+
+#### 📦 影响范围
+- 文件清单：build.bat、Excel批量解密工具与密码管理.py、README.md
+- 兼容性：保持与之前版本的配置文件、密码本格式完全兼容
+- 用户感知：升级后首次启动即可看到字体/图标/任务栏全方位改善
+
+---
+
+### [v3.6.2] - 2026-06-12
+
+#### 🐛 打包脚本修复
+- **修复 pip/python 解释器错位问题**
+  - build.bat 中所有裸 `python` 与 `pip` 调用统一 pin 到 `py -3.13`（12 处）与 `py -3.13 -m pip`（5 处）
+  - 解决 `C:\msys64\ucrt64\bin\python.exe: No module named PyInstaller` 报错——根因为 MSYS2 Python 3.14（无项目依赖）与 System Python 3.13（已装好 PyInstaller）共存导致 `pip` 与 `python` 解析到不同解释器
+  - 排除 `python.org`（URL）与 `pythoncom`（PyInstaller 参数）误改
+- **新增启动诊断行**
+  - step [3/10] 起始打印 `sys.executable`，让解释器错位问题立即可见
+  - 日志示例：`[信息] 打包将使用: C:\Users\BlackSky\AppData\Local\Programs\Python\Python313\python.exe`
+#### 📦 影响范围
+- 打包流程：仅在 `py -3.13` 解析失败时才会报错（之前会静默选错解释器）
+- 用户机器要求：必须安装 Python 3.13（已有则无需变动）
+
+---
+
+### [v3.6.1] - 2026-06-12
+
+#### 🐛 关键Bug修复
+- **修复未解决的Git合并冲突**
+  - 解决了主源文件、convert_icon.py、requirements.txt 中残留的Git合并冲突标记
+  - 恢复了Python解释器对所有源文件的正常解析（`ast.parse` 与 `py_compile` 均通过）
+  - 解决"批量解密模块无法使用"的根因——冲突标记导致 `SyntaxError`，程序根本无法启动
+  - 保留 HEAD 分支（v3.6.0），剔除 v3.0 旧版分支
+- **build.bat 适配修复后版本**
+  - 版本号 v3.5 → v3.6.0
+  - 升级为 10 步构建流程
+  - 新增步骤 [6/10]：源代码健全性检查（Git 冲突标记扫描 + Python 语法校验）
+  - 防止类似冲突再次进入打包流程
+- **依赖清单修复**
+  - requirements.txt 恢复为版本化固定（`PyQt5==5.15.11`、`pywin32==308`）
+
+#### 📦 影响范围
+- 主程序入口：原 `SyntaxError` 已消除，所有模块（含批量解密）恢复正常
+- 打包流程：新增健全性检查环节，冲突未解决时拒绝打包
+- 文件瘦身：主源文件从 2997 行缩减至 1507 行（剔除 1490 行旧版分支）
+
+---
 
 ### [v3.6.0] - 2026-05-15
 
@@ -138,7 +318,7 @@
   - 添加精确的PyQt5模块导入声明
   - 改进文件大小显示（同时显示MB和KB）
 - **UPX压缩集成**
-  - 自动检测D:\tools\upx.exe
+  - 自动检测D:`tools`upx.exe
   - 使用--best --lzma最佳压缩模式
   - 显示压缩前后对比和节省空间百分比
   - 优雅降级：无UPX时仍可正常打包

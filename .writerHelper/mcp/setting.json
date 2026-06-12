@@ -1,0 +1,10 @@
+{
+  "text": {
+    "key": "enc:r0bIfZBntwXj4Nr7z/3qUWOe3ScTyMw+fagk+ak77x3GrPKGmINPltbniVTleeoRolBB0rPITwg7Id+tgTeeQefRLA29g9smWzOhqA==",
+    "url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    "model": "deepseek-v4-flash-260425",
+    "provider": "volcengine",
+    "extraParams": {}
+  },
+  "updatedAt": 1781250225795
+}

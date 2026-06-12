@@ -1,8 +1,2 @@
-<<<<<<< HEAD
 PyQt5==5.15.11
 pywin32==308
-=======
-pip install pyqt5
-pip install pywin32
-pip install pyinstaller
->>>>>>> cad4c8583212cb6a13af68b9f1b547f5ccd4c4e5
